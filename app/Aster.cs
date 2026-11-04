@@ -113,6 +113,7 @@ namespace Aster
     {
         public double? left;
         public double? top;
+        public double? center; // where Aster stands, whatever the window's width; replaces `left`
         public int scale = 3;
         public bool talk = true;
         public int pets;
@@ -123,13 +124,18 @@ namespace Aster
     public class PetWindow : Window
     {
         const double BubbleRoom = 58;
-        const double SmallestWidth = 250;
+        // Mostly see-through and clicked through, wide enough for the bubble to slide
+        // along when Aster sits at the very edge of the screen.
+        const double SmallestWidth = 500;
         const int MinScale = 2;
         const int MaxScale = 8;
         const double DragThreshold = 4;
         static readonly TimeSpan NapAfter = TimeSpan.FromMinutes(5);
         static readonly TimeSpan ReactionLasts = TimeSpan.FromSeconds(4);
         static readonly TimeSpan WorkGoesStale = TimeSpan.FromMinutes(15);
+        static readonly TimeSpan MadAfter = TimeSpan.FromMinutes(10);
+        static readonly TimeSpan NagEvery = TimeSpan.FromSeconds(45);
+        static readonly TimeSpan WaitingGivesUp = TimeSpan.FromHours(2);
 
         const int GWL_EXSTYLE = -20;
         const int WS_EX_TOOLWINDOW = 0x00000080;
@@ -175,6 +181,9 @@ namespace Aster
         string reaction;
         DateTime reactionUntil = DateTime.MinValue;
         DateTime lastTouch = DateTime.UtcNow;
+        DateTime lastNag = DateTime.MinValue;
+        bool hasNagged;
+        bool isBubbleStuck;
 
         bool isPressed;
         bool isHeld;
@@ -197,8 +206,15 @@ namespace Aster
             {
                 settings.talk = value;
                 SaveSettings();
-                if (value) Say("I'll keep you posted!");
-                else bubbleBox.Visibility = Visibility.Hidden;
+                if (value)
+                {
+                    Say("I'll keep you posted!");
+                }
+                else
+                {
+                    isBubbleStuck = false;
+                    bubbleBox.Visibility = Visibility.Hidden;
+                }
             }
         }
 
@@ -214,7 +230,9 @@ namespace Aster
                     case "asleep": return "Having a little nap";
                     case "happy": return "Just finished something!";
                     case "oops": return "Something went wrong";
-                    case "waving": return "Claude needs you";
+                    case "waving": return "Saying hi";
+                    case "asking": return "Claude needs you!";
+                    case "mad": return "Furious. Go answer Claude!";
                     case "munching": return "Mid-snack";
                     case "loved": return "Feeling very loved";
                     default: return "Just hanging out";
@@ -286,6 +304,7 @@ namespace Aster
             };
             Loaded += delegate
             {
+                SaveSettings(); // being summoned clears "put away" for good, even if Aster is killed later
                 React("waving", 2);
                 Say("Hi! I'm Aster.");
                 Poll();
@@ -380,9 +399,12 @@ namespace Aster
 
         void PlaceAtStart()
         {
-            if (settings.left.HasValue && settings.top.HasValue)
+            const double OldWindowWidth = 250;
+            var center = settings.center;
+            if (!center.HasValue && settings.left.HasValue) center = settings.left.Value + OldWindowWidth / 2;
+            if (center.HasValue && settings.top.HasValue)
             {
-                Left = settings.left.Value;
+                Left = center.Value - Width / 2;
                 Top = settings.top.Value;
                 KeepOnScreen();
 
@@ -390,7 +412,7 @@ namespace Aster
             }
 
             var area = SystemParameters.WorkArea;
-            Left = area.Right - Width - 24;
+            Left = area.Right - Width / 2 - image.Width / 2 - 24;
             Top = area.Bottom - Height;
         }
 
@@ -422,6 +444,15 @@ namespace Aster
 
             if ((mood == "happy" || mood == "oops") && age > ReactionLasts) mood = "idle";
             if ((mood == "thinking" || mood == "working" || mood == "waving") && age > WorkGoesStale) mood = "idle";
+
+            // Claude is waiting on you: asking at first, mad after ten minutes. A
+            // session that died while waiting can't say so, so even mad wears off.
+            if (mood == "asking")
+            {
+                if (age <= MadAfter) return "asking";
+                if (age <= WaitingGivesUp) return "mad";
+                mood = "idle";
+            }
             if (mood == "idle")
             {
                 var quiet = now - Later(Later(since, startedAt), lastTouch);
@@ -443,10 +474,45 @@ namespace Aster
         void Refresh()
         {
             var name = CurrentAnimation();
-            if (name == playing) return;
-            playing = name;
-            frameAt = -1;
-            NextFrame();
+            if (name != playing)
+            {
+                playing = name;
+                frameAt = -1;
+                SayMood(name);
+                NextFrame();
+            }
+            if (name == "mad" && DateTime.UtcNow - lastNag > NagEvery) Nag();
+        }
+
+        // What Aster says about Claude waiting stays up until it's answered.
+        void SayMood(string name)
+        {
+            if (name == "asking")
+            {
+                Say(string.IsNullOrEmpty(status.line) ? "I need you for a sec!" : status.line, true);
+            }
+            else if (name == "mad")
+            {
+                Nag();
+            }
+            else if (reaction == null)
+            {
+                hasNagged = false;
+                if (isBubbleStuck)
+                {
+                    isBubbleStuck = false;
+                    FadeBubble();
+                }
+            }
+        }
+
+        void Nag()
+        {
+            lastNag = DateTime.UtcNow;
+            Say(hasNagged
+                ? Pick("HELLO?? Claude needs you!", "Still waiting over here...", "I'm not mad. Okay, I'm mad.", "Answer Claude already!", "Rude.", "Claude is being very patient. I am not.")
+                : "Hey! Claude's been waiting 10 minutes!", true);
+            hasNagged = true;
         }
 
         void NextFrame()
@@ -471,16 +537,36 @@ namespace Aster
             Refresh();
         }
 
-        void Say(string line)
+        void Say(string line, bool isStuck = false)
         {
             if (!settings.talk || string.IsNullOrEmpty(line)) return;
             bubbleText.Text = line;
             bubbleBox.BeginAnimation(OpacityProperty, null);
             bubbleBox.Opacity = 1;
             bubbleBox.Visibility = Visibility.Visible;
+            isBubbleStuck = isStuck;
+            PlaceBubble();
             bubbleTimer.Stop();
+            if (isStuck) return;
             bubbleTimer.Interval = TimeSpan.FromMilliseconds(Math.Max(2600, line.Length * 90));
             bubbleTimer.Start();
+        }
+
+        // Aster can sit right at the edge of the screen, so the bubble slides along
+        // to stay readable. The tail stays over Aster.
+        void PlaceBubble()
+        {
+            if (bubbleBox.Visibility != Visibility.Visible) return;
+            bubbleBox.UpdateLayout();
+            const double Gap = 6;
+            var center = Left + Width / 2;
+            var half = bubble.ActualWidth / 2;
+            var screenLeft = SystemParameters.VirtualScreenLeft;
+            var screenRight = screenLeft + SystemParameters.VirtualScreenWidth;
+            var shift = 0.0;
+            if (center + half > screenRight - Gap) shift = screenRight - Gap - (center + half);
+            else if (center - half < screenLeft + Gap) shift = screenLeft + Gap - (center - half);
+            bubble.RenderTransform = new TranslateTransform(shift, 0);
         }
 
         void FadeBubble()
@@ -488,7 +574,7 @@ namespace Aster
             var fade = new DoubleAnimation(0, TimeSpan.FromMilliseconds(350));
             fade.Completed += delegate
             {
-                if (!bubbleTimer.IsEnabled) bubbleBox.Visibility = Visibility.Hidden;
+                if (!bubbleTimer.IsEnabled && !isBubbleStuck) bubbleBox.Visibility = Visibility.Hidden;
             };
             bubbleBox.BeginAnimation(OpacityProperty, fade);
         }
@@ -567,6 +653,7 @@ namespace Aster
             }
             Left = pressLeft + dx;
             Top = pressTop + dy;
+            PlaceBubble();
         }
 
         void OnRelease(object sender, MouseButtonEventArgs e)
@@ -588,8 +675,7 @@ namespace Aster
             lastTouch = DateTime.UtcNow;
             if (!wasHeld) return;
             KeepOnScreen();
-            settings.left = Left;
-            settings.top = Top;
+            RememberPlace();
             SaveSettings();
             React("land", 1);
         }
@@ -599,6 +685,13 @@ namespace Aster
             settings.pets++;
             lastTouch = DateTime.UtcNow;
             SaveSettings();
+            if (playing == "mad")
+            {
+                lastNag = DateTime.UtcNow;
+                Say("Don't pet me. Go answer Claude!", true);
+
+                return;
+            }
             React("loved", 2);
             Say(Pick("Aww, thank you!", "Hehe, that tickles!", "More please!", "You're the best."));
         }
@@ -608,8 +701,9 @@ namespace Aster
             settings.snacks++;
             lastTouch = DateTime.UtcNow;
             SaveSettings();
+            var wasMad = playing == "mad";
             React("munching", 1);
-            Say(Pick("Nom nom nom.", "Cookie!!", "So crunchy."));
+            Say(wasMad ? "Hmph. Fine. One cookie." : Pick("Nom nom nom.", "Cookie!!", "So crunchy."));
         }
 
         void OnWheel(object sender, MouseWheelEventArgs e)
@@ -623,9 +717,15 @@ namespace Aster
             settings.scale = Math.Max(MinScale, Math.Min(MaxScale, scale));
             ApplySize();
             KeepOnScreen();
-            settings.left = Left;
-            settings.top = Top;
+            RememberPlace();
             SaveSettings();
+        }
+
+        void RememberPlace()
+        {
+            settings.center = Left + Width / 2;
+            settings.left = null;
+            settings.top = Top;
         }
 
         void ShowMenu()

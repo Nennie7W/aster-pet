@@ -129,7 +129,70 @@ test('a failed tool is an oops, a question waves', async ($, on) => {
 
   await $.tool.call({ tool: 'AskUserQuestion', questions: [] } as any)
 
-  expect(said.at(-1)).toMatchObject({ mood: 'waving', line: 'I need you for a sec!' })
+  expect(said.at(-1)).toMatchObject({ mood: 'asking', line: 'I need you for a sec!' })
+})
+
+const inTurn = (on: any) => {
+  on('turn.start', (_: unknown, e: { turnId: string }) => ({ turnId: e.turnId }))
+  on('turn.complete', (_: unknown, e: { answer: string }) => ({ text: e.answer }))
+  on('tool.call', () => ({ result: {} }))
+}
+
+const finish = ($: any, answer: string) =>
+  $.turn.complete({ answer, durationMs: 1, isAborted: false, turnId: 't', reason: 'answer' })
+
+test('a finished turn is happy, and one ending on a question is waiting on you', async ($, on) => {
+  const { said } = seat(on)
+  inTurn(on)
+  await start($)
+  await $.turn.start({ text: 'hi', turnId: 't' })
+  await finish($, 'All sorted.')
+
+  expect(said.at(-1)?.mood).toBe('happy')
+
+  await $.turn.start({ text: 'hi', turnId: 't' })
+  await finish($, 'Want me to push it?**')
+
+  expect(said.at(-1)).toMatchObject({ mood: 'asking', line: 'I need you for a sec!' })
+})
+
+test('a turn the desktop app closes as blocked is waiting on you, until the next prompt', async ($, on) => {
+  const { said } = seat(on)
+  inTurn(on)
+  await start($)
+  await $.turn.start({ text: 'hi', turnId: 't' })
+  await $.tool.call({ tool: 'mcp__ccd_turn__wrap_up', recap: 'x', ask: 'y', blocked: true } as any)
+  await finish($, 'No question mark here.')
+
+  expect(said.at(-1)?.mood).toBe('asking')
+
+  await $.turn.start({ text: 'answered', turnId: 't' })
+  await finish($, 'Done.')
+
+  expect(said.at(-1)?.mood).toBe('happy')
+})
+
+test('a wrap-up that asks nothing is not waiting on you', async ($, on) => {
+  const { said } = seat(on)
+  inTurn(on)
+  await start($)
+  await $.turn.start({ text: 'hi', turnId: 't' })
+  await $.tool.call({ tool: 'mcp__ccd_turn__wrap_up', recap: 'x' } as any)
+  await finish($, 'Done.')
+
+  expect(said.at(-1)?.mood).toBe('happy')
+})
+
+test('the wait is timed from when Claude first asked, not from the latest reminder', async ($, on) => {
+  const { said, clock } = seat(on)
+  inTurn(on)
+  await start($)
+  await $.tool.call({ tool: 'AskUserQuestion', questions: [] } as any)
+  const first = (said.at(-1) as unknown as { at: number }).at
+  await clock.advance(5 * 60 * 1000)
+  await $.tool.call({ tool: 'AskUserQuestion', questions: [] } as any)
+
+  expect((said.at(-1) as unknown as { at: number }).at).toBe(first)
 })
 
 test('the pet not being there never stops a tool', async ($, on) => {

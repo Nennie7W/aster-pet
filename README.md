@@ -17,10 +17,11 @@ While Claude works, Aster works too:
 | Reading a file | reads a book |
 | Searching | scans with a magnifying glass |
 | Writing | scribbles with a pencil |
-| Waiting for you | waves to get your attention |
 | Finished | hops around with sparkles |
 | Hitting an error | panics, with a sweat drop |
 | Idle for 5 minutes | dozes off |
+| Waiting for you | jumps up and down waving, with a flashing `!`, until you answer |
+| Still waiting after 10 minutes | gets **mad**: red face, gritted teeth, steam, stomping and nagging. Petting won't help. A cookie might. |
 
 ## Playing with Aster
 

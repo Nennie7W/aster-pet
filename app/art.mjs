@@ -49,9 +49,14 @@ const COLORS = {
   Z: hex('#8fa3c7'), // zzz
   P: hex('#ffd35c'), // sparkle, pencil
   q: [0, 0, 0, 50], // shadow
+  b: hex('#d8453c'), // body, mad
+  h: hex('#ef7f6e'), // highlight, mad
+  s: hex('#a8322c'), // shade, mad
+  c: hex('#ff9c8f'), // cheek, mad
 }
 
-const FEET = [10, 28, ['....OSSSO...OSSSO....', '....OOOOO...OOOOO....']]
+const FOOT_LEFT = [10, 28, ['....OSSSO............', '....OOOOO............']]
+const FOOT_RIGHT = [10, 28, ['............OSSSO....', '............OOOOO....']]
 const SHADOW = [12, 30, ['..qqqqqqqqqqqqq..']]
 const SHADOW_SMALL = [12, 30, ['.....qqqqqqqqq...']]
 const BODY = [
@@ -81,13 +86,15 @@ const SPARK = {
   full: [17, 2, ['...Y...', '.Y.Y.Y.', '..YyY..', 'YYyyyYY', '..YyY..', '.Y.Y.Y.', '...Y...']],
   small: [17, 2, ['.......', '...Y...', '...y...', '.YyyyY.', '...y...', '...Y...', '.......']],
   dim: [17, 2, ['.......', '...V...', '...v...', '.VvvvV.', '...v...', '...V...', '.......']],
+  hot: [17, 2, ['...R...', '.R.R.R.', '..RrR..', 'RRrrrRR', '..RrR..', '.R.R.R.', '...R...']],
+  hotSmall: [17, 2, ['.......', '...R...', '...r...', '.RrrrR.', '...r...', '...R...', '.......']],
 }
 const CHEEKS = [
   [13, 20, ['CC']],
   [26, 20, ['CC']],
 ]
 // Drawn over the body, each opens the body's outline where it joins.
-const armLeft = y => [8, y, ['.OO.', 'OBBB', 'OBBB', '.OO.']]
+const armLeft = (y, dx = 0) => [8 + dx, y, ['.OO.', 'OBBB', 'OBBB', '.OO.']]
 const armRight = (y, dx = 0) => [29 + dx, y, ['.OO.', 'BBBO', 'BBBO', '.OO.']]
 
 const EYE = ['LE', 'EE', 'EE']
@@ -106,6 +113,10 @@ const EYES = {
   shut: pair(['EEE'], 15, 23, 18),
   joy: pair(['.E.', 'E.E'], 15, 23, 17),
   wide: pair(['LLL', 'LEL', 'LLL'], 15, 23, 17),
+  angry: [
+    [14, 16, ['EE...', '.EEE.', '..LE.', '..EE.']],
+    [22, 16, ['...EE', '.EEE.', '.LE..', '.EE..']],
+  ],
 }
 const MOUTH = {
   smile: [19, 21, ['E.E', '.E.']],
@@ -113,6 +124,8 @@ const MOUTH = {
   gasp: [19, 21, ['.E.', 'E.E', '.E.']],
   flat: [19, 22, ['EEE']],
   tiny: [20, 22, ['E']],
+  frown: [19, 22, ['.E.', 'E.E']],
+  teeth: [18, 21, ['EEEEE', 'ELELE', 'EEEEE']],
 }
 
 const HEART = ['.R.R.', 'RrRRR', 'RRRRR', '.RRR.', '..R..']
@@ -123,6 +136,7 @@ const DOT = ['gg', 'gg']
 const DROP = ['.A.', 'AAA', 'AAA', '.A.']
 const BANG = ['RR', 'RR', 'RR', '..', 'RR']
 const PUFF = ['.gg', 'ggg', '.g.']
+const VEIN = ['.R.R.', 'RR.RR', '.....', 'RR.RR', '.R.R.']
 
 const screen = (a, b, c) => [
   14,
@@ -263,6 +277,40 @@ const ANIMS = {
   waving: [17, 14, 17, 14, 17, 14].map((armR, i) =>
     f(200, { eyes: 'joy', mouth: 'grin', armR, armRDx: armR === 14 ? 1 : 0, dy: i % 2, spark: i % 2 ? 'small' : 'full' }),
   ),
+  // Claude needs you: both arms going, little hops, a flashing "!".
+  asking: [0, 1, 2, 3, 4, 5, 6, 7].map(i =>
+    f(140, {
+      eyes: i === 6 ? 'shut' : 'open',
+      mouth: 'grin',
+      armL: i % 2 ? 13 : 16,
+      armLDx: i % 2 ? -1 : 0,
+      armR: i % 2 ? 16 : 13,
+      armRDx: i % 2 ? 0 : 1,
+      dy: [0, -1, -2, -1, 0, -1, -2, -1][i],
+      feetDy: [0, 0, -1, 0, 0, 0, -1, 0][i],
+      spark: i % 2 ? 'small' : 'full',
+      fx: i % 4 < 3 ? [[31, 3, BANG]] : [],
+    }),
+  ),
+  // Ten minutes and still no answer: red, gritting its teeth, stomping, steaming.
+  mad: [0, 1, 2, 3, 4, 5, 6, 7].map(i =>
+    f(170, {
+      eyes: 'angry',
+      mouth: i % 4 < 2 ? 'teeth' : 'frown',
+      isRed: true,
+      spark: i % 2 ? 'hotSmall' : 'hot',
+      dx: i % 2 ? 1 : -1,
+      armL: i % 2 ? 18 : 20,
+      armR: i % 2 ? 20 : 18,
+      feetLDy: i % 4 === 0 ? -2 : 0,
+      feetRDy: i % 4 === 2 ? -2 : 0,
+      fx: [
+        [5 - i % 4, 15 - (i % 4) * 2, PUFF],
+        [33 + i % 4, 15 - (i % 4) * 2, PUFF],
+        ...(i % 4 < 2 ? [[31, 4, VEIN]] : []),
+      ],
+    }),
+  ),
   happy: [0, -2, -4, -4, -2, 0, 1, 0].map((dy, i) =>
     f(95, {
       eyes: 'joy',
@@ -353,6 +401,9 @@ const put = (img, [x, y, rows], dx = 0, dy = 0) => {
   })
 }
 
+const RED_SKIN = { B: 'b', H: 'h', S: 's', C: 'c' }
+const reddened = ([x, y, rows]) => [x, y, rows.map(row => row.replace(/[BHSC]/g, ch => RED_SKIN[ch]))]
+
 const draw = frame => {
   const s = {
     eyes: 'open',
@@ -360,25 +411,31 @@ const draw = frame => {
     spark: 'full',
     armL: 20,
     armR: 20,
+    armLDx: 0,
     armRDx: 0,
     dx: 0,
     dy: 0,
     feetDx: 0,
     feetDy: 0,
+    feetLDy: 0,
+    feetRDy: 0,
     fx: [],
     held: [],
+    isRed: false,
     shadow: true,
     ...frame,
   }
   const img = new Uint8Array(W * H * 4)
   if (s.shadow) put(img, s.dy <= -3 ? SHADOW_SMALL : SHADOW)
-  put(img, FEET, s.feetDx, s.feetDy)
+  put(img, FOOT_LEFT, s.feetDx, s.feetDy + s.feetLDy)
+  put(img, FOOT_RIGHT, s.feetDx, s.feetDy + s.feetRDy)
   const on = part => put(img, part, s.dx, s.dy)
-  on(BODY)
+  const skin = s.isRed ? reddened : part => part
+  on(skin(BODY))
   on(STEM)
-  CHEEKS.forEach(on)
-  on(armLeft(s.armL))
-  on(armRight(s.armR, s.armRDx))
+  CHEEKS.map(skin).forEach(on)
+  on(skin(armLeft(s.armL, s.armLDx)))
+  on(skin(armRight(s.armR, s.armRDx)))
   EYES[s.eyes].forEach(on)
   on(MOUTH[s.mouth])
   on(SPARK[s.spark])
@@ -527,6 +584,8 @@ if (previewAt > 0) {
     ['working-magnifier', 1],
     ['working-pencil', 2],
     ['happy', 3],
+    ['asking', 3],
+    ['mad', 4],
     ['loved', 2],
     ['munching', 1],
     ['held', 3],
