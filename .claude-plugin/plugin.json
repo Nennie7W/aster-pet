@@ -1,0 +1,10 @@
+{
+  "name": "aster",
+  "version": "0.3.0",
+  "description": "Aster, a little pixel pet for Claude Code: floats anywhere on your Windows desktop and reacts to what Claude is doing",
+  "author": { "name": "aster-pet contributors" },
+  "homepage": "https://github.com/Nennie7W/aster-pet",
+  "repository": "https://github.com/Nennie7W/aster-pet",
+  "license": "MIT",
+  "keywords": ["pet", "desktop", "companion", "pixel-art", "windows"]
+}

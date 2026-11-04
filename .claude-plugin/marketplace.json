@@ -1,0 +1,5 @@
+{
+  "name": "aster-pet",
+  "owner": { "name": "Nennie7W" },
+  "plugins": [{ "name": "aster", "source": "./" }]
+}
