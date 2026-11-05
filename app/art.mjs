@@ -527,6 +527,7 @@ const ICONS = {
   moon: [1, 1, ['..KKK..', '.KKK...', 'KKK....', 'KKK....', 'KKK...K', '.KKKKK.', '..KKK..']],
   bubble: [0, 1, ['.OOOOOOO.', 'OWWWWWWWO', 'OWGWGWGWO', 'OWWWWWWWO', '.OOOOOOO.', '..OO.....', '..O......']],
   size: [0, 2, ['.....OOOO', '.....OBBO', 'OOO..OBBO', 'OBO..OBBO', 'OOO..OOOO']],
+  alert: [3, 2, BANG],
 }
 const iconStrip = new Uint8Array(ICON * Object.keys(ICONS).length * ICON * 4)
 const iconNames = Object.keys(ICONS)

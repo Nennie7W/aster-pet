@@ -39,7 +39,6 @@ namespace Aster
     {
         public Manifest Manifest;
         public BitmapSource[] Frames;
-        public BitmapSource Portrait;
         BitmapSource[] icons;
 
         public BitmapSource Icon(string name) { return icons[Manifest.icons[name]]; }
@@ -55,12 +54,18 @@ namespace Aster
             art.Frames = Cut(Picture("sheet.png"), art.Manifest.w, art.Manifest.h);
             art.icons = Cut(Picture("icons.png"), art.Manifest.icon, art.Manifest.icon);
 
-            // Aster from spark to toes, without the empty canvas around them.
-            var portrait = new CroppedBitmap(art.Frames[art.Manifest.anims["idle"][0][0]], new Int32Rect(7, 5, 27, 30));
-            portrait.Freeze();
-            art.Portrait = portrait;
-
             return art;
+        }
+
+        // Aster from spark to toes in this mood, without the empty canvas around them.
+        public BitmapSource Portrait(string animation)
+        {
+            int[][] steps;
+            if (!Manifest.anims.TryGetValue(animation, out steps)) steps = Manifest.anims["idle"];
+            var portrait = new CroppedBitmap(Frames[steps[0][0]], new Int32Rect(7, 5, 27, 30));
+            portrait.Freeze();
+
+            return portrait;
         }
 
         static Stream Resource(string name)
@@ -107,6 +112,15 @@ namespace Aster
         public string line;
         public long at;
         public int tools;
+    }
+
+    // One session waiting on you, from a file of its own in waiting/.
+    public class Waiting
+    {
+        public bool isWaiting;
+        public string project;
+        public string question;
+        public long since;
     }
 
     public class Settings
@@ -184,6 +198,9 @@ namespace Aster
         DateTime lastNag = DateTime.MinValue;
         bool hasNagged;
         bool isBubbleStuck;
+        string waitingLineSaid;
+        List<Waiting> waiting = new List<Waiting>();
+        readonly Dictionary<string, Waiting> waitingByFile = new Dictionary<string, Waiting>();
 
         bool isPressed;
         bool isHeld;
@@ -198,6 +215,8 @@ namespace Aster
         public int Snacks { get { return settings.snacks; } }
         public int Scale { get { return settings.scale; } }
         public int ToolCount { get { return status.tools; } set { status.tools = value; } }
+        public List<Waiting> WaitingNow { get { return waiting; } set { waiting = value; } }
+        public BitmapSource PortraitNow { get { return Art.Portrait(CurrentAnimation()); } }
 
         public bool Talk
         {
@@ -436,23 +455,18 @@ namespace Aster
             if (reaction != null && now < reactionUntil) return reaction;
             reaction = null;
 
-            var since = status.at > 0
-                ? new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc).AddMilliseconds(status.at)
-                : startedAt;
+            // Claude waiting on you beats anything another session is up to: asking
+            // at first, mad once the longest wait passes ten minutes.
+            if (waiting.Count > 0) return now - FromEpoch(waiting[0].since) > MadAfter ? "mad" : "asking";
+
+            var since = status.at > 0 ? FromEpoch(status.at) : startedAt;
             var age = now - since;
             var mood = status.mood ?? "idle";
 
             if ((mood == "happy" || mood == "oops") && age > ReactionLasts) mood = "idle";
             if ((mood == "thinking" || mood == "working" || mood == "waving") && age > WorkGoesStale) mood = "idle";
 
-            // Claude is waiting on you: asking at first, mad after ten minutes. A
-            // session that died while waiting can't say so, so even mad wears off.
-            if (mood == "asking")
-            {
-                if (age <= MadAfter) return "asking";
-                if (age <= WaitingGivesUp) return "mad";
-                mood = "idle";
-            }
+            if (mood == "asking") mood = "idle"; // waiting is told by waiting/ now, never by the status
             if (mood == "idle")
             {
                 var quiet = now - Later(Later(since, startedAt), lastTouch);
@@ -471,6 +485,11 @@ namespace Aster
 
         static DateTime Later(DateTime a, DateTime b) { return a > b ? a : b; }
 
+        static DateTime FromEpoch(long ms)
+        {
+            return new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc).AddMilliseconds(ms);
+        }
+
         void Refresh()
         {
             var name = CurrentAnimation();
@@ -481,7 +500,15 @@ namespace Aster
                 SayMood(name);
                 NextFrame();
             }
+            if (name == "asking" && WaitingLine() != waitingLineSaid) SayMood(name);
             if (name == "mad" && DateTime.UtcNow - lastNag > NagEvery) Nag();
+        }
+
+        string WaitingLine()
+        {
+            return waiting.Count == 1
+                ? "Claude needs you in " + waiting[0].project + "!"
+                : "Claude needs you in " + waiting.Count + " places!";
         }
 
         // What Aster says about Claude waiting stays up until it's answered.
@@ -489,7 +516,8 @@ namespace Aster
         {
             if (name == "asking")
             {
-                Say(string.IsNullOrEmpty(status.line) ? "I need you for a sec!" : status.line, true);
+                waitingLineSaid = WaitingLine();
+                Say(waitingLineSaid, true);
             }
             else if (name == "mad")
             {
@@ -510,7 +538,7 @@ namespace Aster
         {
             lastNag = DateTime.UtcNow;
             Say(hasNagged
-                ? Pick("HELLO?? Claude needs you!", "Still waiting over here...", "I'm not mad. Okay, I'm mad.", "Answer Claude already!", "Rude.", "Claude is being very patient. I am not.")
+                ? Pick("HELLO?? Claude needs you!", "Right-click me. I'll show you where.", "Still waiting over here...", "I'm not mad. Okay, I'm mad.", "Answer Claude already!", "Rude.", "Claude is being very patient. I am not.")
                 : "Hey! Claude's been waiting 10 minutes!", true);
             hasNagged = true;
         }
@@ -579,8 +607,60 @@ namespace Aster
             bubbleBox.BeginAnimation(OpacityProperty, fade);
         }
 
+        // Every session waiting on you has a file saying so. Files it's done with, and
+        // waits from a session that died without saying so, are cleared here.
+        void ReadWaiting()
+        {
+            var found = new List<Waiting>();
+            var directory = System.IO.Path.Combine(folder, "waiting");
+            if (Directory.Exists(directory))
+            {
+                foreach (var file in Directory.GetFiles(directory, "*.json"))
+                {
+                    try
+                    {
+                        var entry = json.Deserialize<Waiting>(ReadShared(file));
+                        if (entry == null) continue;
+                        if (!entry.isWaiting || DateTime.UtcNow - FromEpoch(entry.since) > WaitingGivesUp)
+                        {
+                            waitingByFile.Remove(file);
+                            File.Delete(file);
+                            continue;
+                        }
+                        waitingByFile[file] = entry;
+                        found.Add(entry);
+                    }
+                    catch (Exception)
+                    {
+                        // Half-written: keep what it said last, and read it again next poll.
+                        Waiting known;
+                        if (waitingByFile.TryGetValue(file, out known)) found.Add(known);
+                    }
+                }
+            }
+            found.Sort((a, b) => a.since.CompareTo(b.since));
+            waiting = found;
+        }
+
+        static string ReadShared(string path)
+        {
+            using (var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+            using (var reader = new StreamReader(stream, Encoding.UTF8))
+            {
+                return reader.ReadToEnd();
+            }
+        }
+
         void Poll()
         {
+            try
+            {
+                ReadWaiting();
+            }
+            catch (Exception)
+            {
+                // Next poll tries again.
+            }
             try
             {
                 if (File.Exists(statusPath))
@@ -588,23 +668,16 @@ namespace Aster
                     var stamp = File.GetLastWriteTimeUtc(statusPath);
                     if (stamp != statusStamp)
                     {
-                        // Read alongside the mod's writes; a half-written file fails
+                        // Read alongside the plugin's writes; a half-written file fails
                         // the parse and is simply read again on the next poll.
-                        string text;
-                        using (var stream = new FileStream(statusPath, FileMode.Open, FileAccess.Read,
-                            FileShare.ReadWrite | FileShare.Delete))
-                        using (var reader = new StreamReader(stream, Encoding.UTF8))
-                        {
-                            text = reader.ReadToEnd();
-                        }
-                        var next = json.Deserialize<Status>(text);
+                        var next = json.Deserialize<Status>(ReadShared(statusPath));
                         if (next != null)
                         {
                             statusStamp = stamp;
                             var previous = status.line;
                             var isFresh = status.at != next.at;
                             status = next;
-                            if (isFresh && next.line != previous) Say(next.line);
+                            if (isFresh && next.line != previous && waiting.Count == 0) Say(next.line);
                         }
                     }
                 }
@@ -790,6 +863,12 @@ namespace Aster
             if (renderAt >= 0 && renderAt + 1 < args.Length)
             {
                 var sample = new PetWindow(folder, new Settings { pets = 42, snacks = 12 }, Art.Load()) { ToolCount = 128 };
+                var now = (long)(DateTime.UtcNow - new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc)).TotalMilliseconds;
+                sample.WaitingNow = new List<Waiting>
+                {
+                    new Waiting { project = "my-website", question = "Okay to delete the old build folder?", since = now - 4 * 60000 },
+                    new Waiting { project = "aster-pet", question = "Send this update to GitHub too?", since = now - 30000 },
+                };
                 PetMenu.RenderToPng(sample, args[renderAt + 1]);
 
                 return 0;

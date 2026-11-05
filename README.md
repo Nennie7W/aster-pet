@@ -20,7 +20,7 @@ While Claude works, Aster works too:
 | Finished | hops around with sparkles |
 | Hitting an error | panics, with a sweat drop |
 | Idle for 5 minutes | dozes off |
-| Waiting for you | jumps up and down waving, with a flashing `!`, until you answer |
+| Waiting for you | jumps up and down waving, with a flashing `!`, and tells you which project needs you |
 | Still waiting after 10 minutes | gets **mad**: red face, gritted teeth, steam, stomping and nagging. Petting won't help. A cookie might. |
 
 ## Playing with Aster
@@ -31,10 +31,10 @@ While Claude works, Aster works too:
 | **Click** | Hearts |
 | **Double-click** | A cookie |
 | **Scroll** | Bigger or smaller |
-| **Right-click** | The menu: stats, size, speech bubble, put Aster away |
+| **Right-click** | The menu: where Claude needs you and what it asked, stats, size, speech bubble, put Aster away |
 
 <p align="center">
-  <img src="docs/menu.png" alt="Aster's right-click menu, showing pets, snacks and tools counts, then pet, snack, size and speech bubble controls" width="290">
+  <img src="docs/menu.png" alt="Aster's right-click menu, listing two projects where Claude needs you and what it asked, then pets, snacks and tools counts, and pet, snack, size and speech bubble controls" width="290">
 </p>
 
 If you put Aster away, type `/aster` to bring it back.
@@ -66,8 +66,9 @@ Start a new session and Aster appears in the bottom-right corner of your screen.
 - `hooks/register.ts` is the Claude Code plugin. It builds and starts the app, then writes what Claude is doing to `~/.claude/aster/status.json`.
 - `app/` is the desktop app, a small C#/WPF program that reads that file a few times a second. `app/art.mjs` draws every pixel of Aster from text, and its output is checked in, so building the app doesn't need Node.
 - Your position, size and pet count are kept in `~/.claude/aster/settings.json`.
+- While a session waits on you, it keeps a small file in `~/.claude/aster/waiting/` with the project folder's name and the question, so the menu can show every session that needs you. The file is cleared once you answer.
 
-Aster has no network code. Nothing leaves your computer, and the only thing it learns about your work is which kind of tool Claude is using.
+Aster has no network code, and nothing leaves your computer. All it learns about your work is which kind of tool Claude is using, plus where and what Claude is asking while it waits on you.
 
 After an update, the new version takes over once the running Aster closes: put Aster away, then type `/aster`.
 

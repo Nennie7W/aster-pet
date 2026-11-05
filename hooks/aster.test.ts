@@ -13,6 +13,7 @@ const WINDOWS = { USERPROFILE: 'C:/Users/me', WINDIR: 'C:\\Windows' }
 const seat = (on: any, options: Seat = {}) => {
   const { entries, isBuilt = true, isDiskFull = false, doesBuildFail = false, env = WINDOWS } = options
   const said: { mood: string; prop: string; line: string; tools: number }[] = []
+  const waits: { isWaiting: boolean; project?: string; question?: string; since?: number }[] = []
   const paths: string[] = []
   const commands: string[][] = []
   on('command.register', () => ({ value: { command: 'aster' } }))
@@ -21,8 +22,9 @@ const seat = (on: any, options: Seat = {}) => {
   on('fs.exists', () => ({ value: isBuilt }))
   on('fs.write', (_: unknown, e: { path: string; text: string }) => {
     if (isDiskFull) throw new Error('disk full')
-    paths.push(e.path.replaceAll('\\', '/'))
-    said.push(JSON.parse(e.text))
+    const path = e.path.replaceAll('\\', '/')
+    paths.push(path)
+    ;(path.includes('/waiting/') ? waits : said).push(JSON.parse(e.text))
 
     return { value: undefined }
   })
@@ -36,10 +38,12 @@ const seat = (on: any, options: Seat = {}) => {
   })
   on('ui.log', () => ({ value: undefined }))
   on('ui.toast', () => ({ value: undefined }))
+  on('session.id', () => ({ value: 'session-1' }))
+  on('session.root', () => ({ value: 'C:\\work\\my-app' }))
   mock.env(on, env)
   mock.store(on, entries)
 
-  return { said, paths, commands, clock: mock.clock(on) }
+  return { said, waits, paths, commands, clock: mock.clock(on) }
 }
 
 const start = ($: any) =>
@@ -117,8 +121,8 @@ test('bookkeeping calls do not move Aster', async ($, on) => {
   expect(said).toHaveLength(0)
 })
 
-test('a failed tool is an oops, a question waves', async ($, on) => {
-  const { said } = seat(on)
+test('a failed tool is an oops, and a question says where and what', async ($, on) => {
+  const { said, waits, paths } = seat(on)
   on('tool.call', (_: unknown, e: { tool: string }) =>
     e.tool === 'Bash' ? { result: {}, isError: true, text: 'no' } : { result: {} },
   )
@@ -127,9 +131,10 @@ test('a failed tool is an oops, a question waves', async ($, on) => {
 
   expect(said.map(s => s.mood)).toEqual(['working', 'oops'])
 
-  await $.tool.call({ tool: 'AskUserQuestion', questions: [] } as any)
+  await $.tool.call({ tool: 'AskUserQuestion', questions: [{ question: 'Ship **it**?' }] } as any)
 
-  expect(said.at(-1)).toMatchObject({ mood: 'asking', line: 'I need you for a sec!' })
+  expect(paths.at(-1)).toBe('C:/Users/me/.claude/aster/waiting/session-1.json')
+  expect(waits.at(-1)).toMatchObject({ isWaiting: true, project: 'my-app', question: 'Ship it?' })
 })
 
 const inTurn = (on: any) => {
@@ -142,7 +147,7 @@ const finish = ($: any, answer: string) =>
   $.turn.complete({ answer, durationMs: 1, isAborted: false, turnId: 't', reason: 'answer' })
 
 test('a finished turn is happy, and one ending on a question is waiting on you', async ($, on) => {
-  const { said } = seat(on)
+  const { said, waits } = seat(on)
   inTurn(on)
   await start($)
   await $.turn.start({ text: 'hi', turnId: 't' })
@@ -151,29 +156,32 @@ test('a finished turn is happy, and one ending on a question is waiting on you',
   expect(said.at(-1)?.mood).toBe('happy')
 
   await $.turn.start({ text: 'hi', turnId: 't' })
-  await finish($, 'Want me to push it?**')
+  await finish($, 'Here is what I found.\n\nWant me to push it?**')
 
-  expect(said.at(-1)).toMatchObject({ mood: 'asking', line: 'I need you for a sec!' })
+  expect(waits.at(-1)).toMatchObject({ isWaiting: true, question: 'Want me to push it?' })
 })
 
 test('a turn the desktop app closes as blocked is waiting on you, until the next prompt', async ($, on) => {
-  const { said } = seat(on)
+  const { said, waits } = seat(on)
   inTurn(on)
   await start($)
   await $.turn.start({ text: 'hi', turnId: 't' })
   await $.tool.call({ tool: 'mcp__ccd_turn__wrap_up', recap: 'x', ask: 'y', blocked: true } as any)
   await finish($, 'No question mark here.')
 
-  expect(said.at(-1)?.mood).toBe('asking')
+  expect(waits.at(-1)).toMatchObject({ isWaiting: true, question: 'y' })
 
   await $.turn.start({ text: 'answered', turnId: 't' })
+
+  expect(waits.at(-1)).toEqual({ isWaiting: false })
+
   await finish($, 'Done.')
 
   expect(said.at(-1)?.mood).toBe('happy')
 })
 
 test('a wrap-up that asks nothing is not waiting on you', async ($, on) => {
-  const { said } = seat(on)
+  const { said, waits } = seat(on)
   inTurn(on)
   await start($)
   await $.turn.start({ text: 'hi', turnId: 't' })
@@ -181,18 +189,34 @@ test('a wrap-up that asks nothing is not waiting on you', async ($, on) => {
   await finish($, 'Done.')
 
   expect(said.at(-1)?.mood).toBe('happy')
+  expect(waits).toHaveLength(0)
 })
 
 test('the wait is timed from when Claude first asked, not from the latest reminder', async ($, on) => {
-  const { said, clock } = seat(on)
+  const { waits, clock } = seat(on)
   inTurn(on)
   await start($)
   await $.tool.call({ tool: 'AskUserQuestion', questions: [] } as any)
-  const first = (said.at(-1) as unknown as { at: number }).at
+  const first = waits.at(-1)?.since
   await clock.advance(5 * 60 * 1000)
   await $.tool.call({ tool: 'AskUserQuestion', questions: [] } as any)
 
-  expect((said.at(-1) as unknown as { at: number }).at).toBe(first)
+  expect(waits.at(-1)?.since).toBe(first)
+})
+
+test('a long question is cut to fit, and a closed session stops waiting', async ($, on) => {
+  const { waits } = seat(on)
+  inTurn(on)
+  on('session.end', () => ({ sessionId: 'session-1' }))
+  await start($)
+  await $.tool.call({ tool: 'AskUserQuestion', questions: [{ question: 'x'.repeat(500) }] } as any)
+
+  expect(waits.at(-1)?.question).toHaveLength(140)
+  expect(waits.at(-1)?.question?.endsWith('…')).toBe(true)
+
+  await $.session.end({ reason: 'clear' } as any)
+
+  expect(waits.at(-1)).toEqual({ isWaiting: false })
 })
 
 test('the pet not being there never stops a tool', async ($, on) => {

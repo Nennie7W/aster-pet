@@ -4,15 +4,19 @@ import type { EngineInterface, Register, Timer } from 'claude-code'
 // builds it from app/ with the C# compiler Windows ships, into ~/.claude/aster, and
 // starts it. After that the plugin is the app's link to Claude: it keeps
 // status.json up to date, which the app reads a few times a second. Naps and stale
-// moods are the app's to judge.
+// moods are the app's to judge. A session waiting on you also keeps a file of its
+// own in waiting/, saying where and what it asked, so one busy session can't hide
+// another that needs you. The app clears the files it's done with.
 
-type Mood = 'idle' | 'thinking' | 'working' | 'asking' | 'happy' | 'oops'
+type Mood = 'idle' | 'thinking' | 'working' | 'happy' | 'oops'
 type Prop = 'laptop' | 'book' | 'magnifier' | 'pencil'
 
 const TOOLS_KEY = 'tools'
 const BACK_TO_THINKING_MS = 1500
 const BUILD_LIMIT_MS = 60_000
-const NEEDS_YOU = 'I need you for a sec!'
+const QUESTION_LIMIT = 140
+const NEEDS_YOU = 'Claude needs your input.'
+const NEEDS_PERMISSION = 'Claude needs your permission.'
 
 // Bookkeeping calls Aster doesn't look up for: they'd only make it flicker.
 const QUIET_TOOL = /update_plan|wrap_up|mark_chapter|ToolSearch/
@@ -24,7 +28,7 @@ const ENDS_ASKING = /\?[\s*_`"')\]]*$/
 let tools = 0
 let running = 0
 let isTurnOpen = false
-let isBlockedOnYou = false
+let blockedQuestion: string | undefined
 let isAsking = false
 let askingSince = 0
 let settleTimer: Timer | undefined
@@ -32,7 +36,6 @@ let settleTimer: Timer | undefined
 function whatItDoes(tool: string): { mood: Mood; prop: Prop; line: string } {
   const working = (prop: Prop, line: string) => ({ mood: 'working' as const, prop, line })
 
-  if (tool === 'AskUserQuestion') return { mood: 'asking', prop: 'laptop', line: NEEDS_YOU }
   if (tool === 'Read') return working('book', 'Reading a file…')
   if (tool === 'Grep' || tool === 'Glob') return working('magnifier', 'Searching…')
   if (/^(Web|mcp__Claude_Browser|mcp__claude-in-chrome)/.test(tool)) {
@@ -51,6 +54,57 @@ async function folder($: EngineInterface): Promise<string> {
   return `${home}/.claude/aster`
 }
 
+function placeOf(root: string): string {
+  return root.split(/[\\/]/).filter(Boolean).pop() ?? root
+}
+
+// One line of what was asked: markdown marks off, and short enough for the menu.
+function shortened(question: string): string {
+  const line = question.replace(/[*_`#]/g, '').replace(/\s+/g, ' ').trim()
+
+  return line.length > QUESTION_LIMIT ? `${line.slice(0, QUESTION_LIMIT - 1).trimEnd()}…` : line
+}
+
+function lastLine(text: string): string {
+  return text.trim().split(/\r?\n/).filter(Boolean).pop() ?? ''
+}
+
+async function waitingFile($: EngineInterface): Promise<string> {
+  const id = (await $.session.id()).replace(/[^\w-]/g, '_')
+
+  return `${await folder($)}/waiting/${id}.json`
+}
+
+// `since` is when Claude started waiting, however many times it says so after:
+// the app gets mad by how long that's been.
+async function askFor($: EngineInterface, question: string): Promise<void> {
+  try {
+    if (!isAsking) askingSince = await $.clock.now()
+    isAsking = true
+    await $.fs.write(
+      await waitingFile($),
+      JSON.stringify({
+        isWaiting: true,
+        project: placeOf(await $.session.root()),
+        question: shortened(question),
+        since: askingSince,
+      }),
+    )
+  } catch {
+    // Claude still gets its answer; Aster just won't be the one to say so.
+  }
+}
+
+async function stopAsking($: EngineInterface): Promise<void> {
+  if (!isAsking) return
+  isAsking = false
+  try {
+    await $.fs.write(await waitingFile($), JSON.stringify({ isWaiting: false }))
+  } catch {
+    // The app gives up on an old wait by itself.
+  }
+}
+
 // A pet missing a beat is never worth failing the work, so nothing here throws.
 async function tell(
   $: EngineInterface,
@@ -58,13 +112,9 @@ async function tell(
   line = '',
   prop: Prop = 'laptop',
 ): Promise<void> {
+  await stopAsking($)
   try {
-    // `at` is when Claude started waiting, however many times it says so since:
-    // the app gets mad by how long that's been.
-    const now = await $.clock.now()
-    const at = mood === 'asking' && isAsking ? askingSince : now
-    if (mood === 'asking') askingSince = at
-    isAsking = mood === 'asking'
+    const at = await $.clock.now()
     await $.fs.write(
       `${await folder($)}/status.json`,
       JSON.stringify({ mood, prop, line, at, tools }),
@@ -163,7 +213,7 @@ export const register: Register = on => {
   on('turn.start', async ($, e, next) => {
     if (e.agentId === undefined) {
       isTurnOpen = true
-      isBlockedOnYou = false
+      blockedQuestion = undefined
       running = 0
       settleTimer?.cancel()
       await tell($, 'thinking', 'Thinking…')
@@ -174,16 +224,22 @@ export const register: Register = on => {
 
   on('tool.call', async ($, e, next) => {
     const tool = String(e.tool)
-    if (CLOSING_TOOL.test(tool) && (e as unknown as { blocked?: boolean }).blocked === true) {
-      isBlockedOnYou = true
+    if (CLOSING_TOOL.test(tool)) {
+      const { blocked, ask } = e as unknown as { blocked?: boolean; ask?: string }
+      if (blocked === true) blockedQuestion = ask || NEEDS_YOU
     }
     if (QUIET_TOOL.test(tool)) return next(e)
 
     running++
     tools++
     settleTimer?.cancel()
-    const { mood, prop, line } = whatItDoes(tool)
-    await tell($, mood, line, prop)
+    if (tool === 'AskUserQuestion') {
+      const { questions } = e as unknown as { questions?: { question?: string }[] }
+      await askFor($, questions?.[0]?.question || NEEDS_YOU)
+    } else {
+      const { mood, prop, line } = whatItDoes(tool)
+      await tell($, mood, line, prop)
+    }
     void $.store.set(TOOLS_KEY, tools).catch(() => undefined)
 
     const ran = await next(e)
@@ -203,9 +259,8 @@ export const register: Register = on => {
   })
 
   on('classic.Notification', async ($, e, next) => {
-    if (e.notification_type === 'permission_prompt' || e.notification_type === 'elicitation_dialog') {
-      await tell($, 'asking', NEEDS_YOU)
-    }
+    if (e.notification_type === 'permission_prompt') await askFor($, e.message || NEEDS_PERMISSION)
+    else if (e.notification_type === 'elicitation_dialog') await askFor($, e.message || NEEDS_YOU)
 
     return next(e)
   })
@@ -216,7 +271,8 @@ export const register: Register = on => {
       running = 0
       settleTimer?.cancel()
       if (e.reason === 'answer') {
-        if (isBlockedOnYou || ENDS_ASKING.test(e.answer)) await tell($, 'asking', NEEDS_YOU)
+        if (blockedQuestion) await askFor($, blockedQuestion)
+        else if (ENDS_ASKING.test(e.answer)) await askFor($, lastLine(e.answer))
         else await tell($, 'happy', 'All done!')
       } else if (e.reason === 'aborted') {
         await tell($, 'idle')
@@ -230,7 +286,7 @@ export const register: Register = on => {
 
   // Nobody's left to answer a closed session, so Aster stops waiting for one.
   on('session.end', async ($, e, next) => {
-    if (isAsking) await tell($, 'idle')
+    await stopAsking($)
 
     return next(e)
   })

@@ -1,6 +1,6 @@
 {
   "name": "aster",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Aster, a little pixel pet for Claude Code: floats anywhere on your Windows desktop and reacts to what Claude is doing",
   "author": { "name": "aster-pet contributors" },
   "homepage": "https://github.com/Nennie7W/aster-pet",

@@ -28,6 +28,7 @@ namespace Aster
         const uint MONITOR_DEFAULTTONEAREST = 2;
         const int VK_LBUTTON = 0x01;
         const int VK_RBUTTON = 0x02;
+        const int MostWaitsShown = 3;
 
         static readonly Brush Ink = Solid(0x4a, 0x23, 0x18);
         static readonly Brush Cream = Solid(0xff, 0xf8, 0xf0);
@@ -35,6 +36,8 @@ namespace Aster
         static readonly Brush Soft = Solid(0xf8, 0xe8, 0xda);
         static readonly Brush Line = Solid(0xe6, 0xcf, 0xbd);
         static readonly Brush Faint = Solid(0x8f, 0x6d, 0x5e);
+        static readonly Brush Alert = Solid(0xfd, 0xe6, 0xdf);
+        static readonly Brush AlertEdge = Solid(0xf0, 0xb9, 0xa8);
         static readonly FontFamily Face = new FontFamily("Cascadia Mono, Consolas");
 
         struct POINT { public int X; public int Y; }
@@ -152,6 +155,7 @@ namespace Aster
         {
             var list = new StackPanel();
             list.Children.Add(Header());
+            list.Children.Add(Needs());
             list.Children.Add(Stats());
             list.Children.Add(Divider());
             list.Children.Add(ActionRow("heart", "Pet Aster", "click", pet.Pet));
@@ -198,13 +202,87 @@ namespace Aster
             names.Children.Add(name);
             names.Children.Add(mood);
 
-            var portrait = Pixels(pet.Art.Portrait, 2);
+            var portrait = Pixels(pet.PortraitNow, 2);
             DockPanel.SetDock(portrait, Dock.Left);
             var header = new DockPanel { Margin = new Thickness(5, 3, 5, 6) };
             header.Children.Add(portrait);
             header.Children.Add(names);
 
             return header;
+        }
+
+        // Where Claude needs you, and what it asked: the first thing to read in the menu.
+        FrameworkElement Needs()
+        {
+            var waiting = pet.WaitingNow;
+            if (waiting.Count == 0)
+            {
+                var clear = Words("Nothing needs you right now", 11.5, Faint, false);
+                clear.HorizontalAlignment = HorizontalAlignment.Center;
+                clear.Margin = new Thickness(0, 0, 0, 6);
+
+                return clear;
+            }
+
+            var stack = new StackPanel { Margin = new Thickness(3, 0, 3, 6) };
+            for (var i = 0; i < waiting.Count && i < MostWaitsShown; i++) stack.Children.Add(WaitingCard(waiting[i]));
+            if (waiting.Count > MostWaitsShown)
+            {
+                var more = Words("and " + (waiting.Count - MostWaitsShown) + " more", 11, Faint, false);
+                more.HorizontalAlignment = HorizontalAlignment.Center;
+                stack.Children.Add(more);
+            }
+
+            return stack;
+        }
+
+        FrameworkElement WaitingCard(Waiting entry)
+        {
+            var place = Words(entry.project ?? "A session", 12.5, Ink, true);
+            place.TextTrimming = TextTrimming.CharacterEllipsis;
+            place.VerticalAlignment = VerticalAlignment.Center;
+            var mark = PixelIcon("alert");
+            mark.Margin = new Thickness(0, 0, 3, 0);
+            DockPanel.SetDock(mark, Dock.Left);
+            var age = Words(HowLong(entry.since), 10.5, Faint, false);
+            age.VerticalAlignment = VerticalAlignment.Center;
+            age.Margin = new Thickness(6, 0, 0, 0);
+            DockPanel.SetDock(age, Dock.Right);
+            var top = new DockPanel();
+            top.Children.Add(mark);
+            top.Children.Add(age);
+            top.Children.Add(place);
+
+            var question = Words(entry.question ?? "", 11.5, Ink, false);
+            question.TextWrapping = TextWrapping.Wrap;
+            question.TextTrimming = TextTrimming.CharacterEllipsis;
+            question.MaxHeight = 48;
+            question.Margin = new Thickness(0, 3, 0, 0);
+
+            var stack = new StackPanel();
+            stack.Children.Add(top);
+            stack.Children.Add(question);
+
+            return new Border
+            {
+                Background = Alert,
+                BorderBrush = AlertEdge,
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(7),
+                Margin = new Thickness(0, 0, 0, 4),
+                Padding = new Thickness(8, 6, 8, 7),
+                Child = stack,
+            };
+        }
+
+        static string HowLong(long since)
+        {
+            var then = new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc).AddMilliseconds(since);
+            var minutes = (int)(DateTime.UtcNow - then).TotalMinutes;
+            if (minutes < 1) return "just now";
+            if (minutes < 60) return minutes + " min";
+
+            return (minutes / 60) + " hr " + (minutes % 60) + " min";
         }
 
         FrameworkElement Stats()
